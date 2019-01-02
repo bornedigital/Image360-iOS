@@ -44,32 +44,38 @@ public protocol Image360ViewObserver: class {
     func image360View(_ view: Image360View, didChangeFOV cameraFov: Float)
 }
 
+public protocol Image360ViewTouchDelegate: class {
+    func image360View(_ view: Image360View, touchesBegan touches: Set<UITouch>, with event: UIEvent?)
+    func image360View(_ view: Image360View, touchesMoved touches: Set<UITouch>, with event: UIEvent?)
+    func image360View(_ view: Image360View, touchesEnded touches: Set<UITouch>, with event: UIEvent?)
+}
+
 /// ## Image360View
 /// This view presentes a special view to dysplay 360° panoramic image.
-/// 
+///
 /// You could change current dysplayed image via `image` property.
 /// Control view utput via `rotationAngleXZ`, `rotationAngleY` and `cameraFovDegree` properties.
 public class Image360View: GLKView {
     // MARK: Sphere data
     private var spheres = [Sphere?].init(repeating: nil, count: 2)
-
+    
     /// Spherical radius for photo attachment
     private let shellRadius: Double = 2.0
     /// Number of spherical polygon partitions for photo attachment
     private let shellDivide: Int = 48
-
+    
     // MARK: Principal axes
     private var roll: Float = 0.0
     private var yaw: Float = 0.0
     private var pitch: Float = 0.0
-
+    
     private var viewAspectRatio: CGFloat!
-
+    
     // MARK: Matrixes
     private var projectionMatrix = GLKMatrix4Identity
     private var lookAtMatrix = GLKMatrix4Identity
     private var modelMatrix = GLKMatrix4Identity
-
+    
     // Shader
     private var shaderProgram: GLuint!
     private var aPosition: GLuint!
@@ -78,13 +84,13 @@ public class Image360View: GLKView {
     private var uView: GLint!
     private var uModel: GLint!
     private var uTex: GLint!
-
+    
     private var textureInfo: [GLenum: GLKTextureInfo]!
-
+    
     // MARK: Camera
     private let cameraPosition = GLKVector3(v: (0.0, 0.0, 0.0))
     private let cameraUp = GLKVector3(v: (0.0, 1.0, 0.0))
-
+    
     /// Camera "Field Of View". Degrees. Readonly.
     /// Use `setCameraFovDegree(newValue:)` to change this value.
     public private(set) var cameraFovDegree: Float = 45.0 {
@@ -111,10 +117,10 @@ public class Image360View: GLKView {
     public let cameraFOVDegreeMin: Float = 30.0
     /// Maximum possible value of `cameraFovDegree`
     public let cameraFOVDegreeMax: Float = 100.0
-
+    
     private let zNear: Float = 0.1
     private let zFar: Float = 100.0
-
+    
     // MARK: Rotation
     /// Rotation angle relative to XZ-plane. Radians. Readonly.
     /// Use `setRotationAngleXZ(newValue:)` to change this value.
@@ -140,7 +146,7 @@ public class Image360View: GLKView {
     public let rotationAngleXZMax = Float.pi
     /// Maximum possible value of `rotationAngleXZ`
     public let rotationAngleXZMin = -Float.pi
-
+    
     /// Rotation angle relative to Y-axis. Radians. Readonly.
     /// Use `setRotationAngleY(newValue:)` to change this value.
     public private(set) var rotationAngleY: Float = 0.0 {
@@ -165,12 +171,12 @@ public class Image360View: GLKView {
     public let rotationAngleYMax = Float.pi / 2 - 0.01 //0.01 to prevent screen drag
     /// Maximum possible value of `rotationAngleY`
     public let rotationAngleYMin = -Float.pi / 2 + 0.01 //0.01 to prevent screen drag
-
+    
     weak var touchesHandler: Image360ViewTouchesHandler?
     public weak var observer: Image360ViewObserver?
-    
+    public weak var touchDelegate : Image360ViewTouchDelegate?
     weak var orientationView: OrientationView?
-
+    
     /// OpenGL Sources
     private let leftTextureUnit = GLenum(GL_TEXTURE0)
     private let rightTextureUnit = GLenum(GL_TEXTURE1)
@@ -178,24 +184,24 @@ public class Image360View: GLKView {
     // MARK: Init
     override init(frame: CGRect) {
         super.init(frame: frame)
-
+        
         guard let context = EAGLContext(api: .openGLES3) else {
             fatalError("OpenGL context can't be created")
         }
-
+        
         EAGLContext.setCurrent(context)
         self.context = context
-
+        
         self.initOpenGLSettings()
-
+        
         spheres[0] = Sphere(radius: shellRadius, divide: shellDivide, rotate: 0.0)
         spheres[1] = Sphere(radius: shellRadius, divide: shellDivide, rotate: Double.pi)
     }
-
+    
     required public init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented") // TODO:!
     }
-
+    
     deinit {
         unloadTextures()
     }
@@ -204,25 +210,25 @@ public class Image360View: GLKView {
         super.layoutSubviews()
         viewAspectRatio = frame.size.width / frame.size.height
     }
-
+    
     /// OpenGL Initial value setting method
     /// - parameter context: OpenGL Context
     private func initOpenGLSettings() {
         let viewWidth = frame.size.width
         let viewHeight = frame.size.height
-
+        
         shaderProgram = glCreateProgram(vertexShaderSrc: Shader.vertexShader.sourceCode,
                                         fragmentShaderSrc: Shader.fragmentShader.sourceCode)
         useAndAttachLocation(program: shaderProgram)
-
+        
         glClearColor(0.0, 0.0, 1.0, 0.0)
-
+        
         viewAspectRatio = viewWidth / viewHeight
         glViewport(0, 0, GLsizei(viewWidth), GLsizei(viewHeight))
     }
-
+    
     private var texturesWereLoaded = false
-
+    
     /// Image presented in view at the moment. Image need to be captured by special
     /// 360° panoramic camera or generated by special software.
     var image: UIImage? {
@@ -231,16 +237,16 @@ public class Image360View: GLKView {
                 unloadTextures()
             }
         }
-
+        
         didSet {
             loadTextures()
-
+            
             self.yaw = 0.0 // Do we really need it here?
             self.roll = 0.0
             self.pitch = 0.0
         }
     }
-
+    
     /// Redraw method.
     public override func draw(_ rect: CGRect) {
         EAGLContext.setCurrent(self.context)
@@ -248,13 +254,13 @@ public class Image360View: GLKView {
         projectionMatrix = GLKMatrix4Identity
         lookAtMatrix = GLKMatrix4Identity
         modelMatrix = GLKMatrix4Identity
-
+        
         glClear(GLbitfield(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT))
-
+        
         let cameraDirection = GLKVector3(v: (cos(rotationAngleXZ) * cos(rotationAngleY),
                                              sin(rotationAngleY),
                                              sin(rotationAngleXZ) * cos(rotationAngleY)))
-
+        
         projectionMatrix = GLKMatrix4MakePerspective(GLKMathDegreesToRadians(cameraFovDegree),
                                                      Float(viewAspectRatio),
                                                      zNear,
@@ -262,22 +268,22 @@ public class Image360View: GLKView {
         lookAtMatrix = GLKMatrix4MakeLookAt(cameraPosition.x, cameraPosition.y, cameraPosition.z,
                                             cameraDirection.x, cameraDirection.y, cameraDirection.z,
                                             cameraUp.x, cameraUp.y, cameraUp.z)
-
+        
         let elevetionAngleMatrix = GLKMatrix4MakeRotation(GLKMathDegreesToRadians(pitch), 0, 0, 1)
         modelMatrix = GLKMatrix4Multiply(modelMatrix, elevetionAngleMatrix)
         let horizontalAngleMatrix = GLKMatrix4MakeRotation(GLKMathDegreesToRadians(roll), 1, 0, 0)
         modelMatrix = GLKMatrix4Multiply(modelMatrix, horizontalAngleMatrix)
-
+        
         glEnableVertexAttribArray(aPosition)
         glEnableVertexAttribArray(aUV)
-
+        
         glUniformGLKMatrix4(uModel, GLboolean(GL_FALSE), &modelMatrix)
         glCheckError("glUniform4fv model")
         glUniformGLKMatrix4(uView, GLboolean(GL_FALSE), &lookAtMatrix)
         glCheckError("glUniform4fv viewmatrix")
         glUniformGLKMatrix4(uProjection, GLboolean(GL_FALSE), &projectionMatrix)
         glCheckError("glUniform4fv projectionmatrix")
-
+        
         for (index, sphere) in spheres.enumerated() {
             let textureUnit: GLenum = (index == 0) ? leftTextureUnit : rightTextureUnit
             glUniform1i(uTex, GLint(textureUnit - GLenum(GL_TEXTURE0)))
@@ -286,34 +292,37 @@ public class Image360View: GLKView {
                 draw(sphere: sphere, position: aPosition, uvLocation: aUV)
             }
         }
-
+        
         glDisableVertexAttribArray(aPosition)
         glDisableVertexAttribArray(aUV)
     }
-
+    
     override public func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         touchesHandler?.image360View(self, touchesBegan: touches, with: event)
+        touchDelegate?.image360View(self, touchesBegan: touches, with: event)
     }
-
+    
     override public func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         touchesHandler?.image360View(self, touchesMoved: touches, with: event)
+        touchDelegate?.image360View(self, touchesMoved: touches, with: event)
     }
-
+    
     override public func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         touchesHandler?.image360View(self, touchesEnded: touches, with: event)
+        touchDelegate?.image360View(self, touchesEnded: touches, with: event)
     }
-
+    
     /// Program validation and various shader variable validation methods for OpenGL
     /// - parameter program: OpenGL Program variable
     func useAndAttachLocation(program: GLuint) {
         glUseProgram(program)
         glCheckError("glUseProgram")
-
+        
         aPosition = GLuint(glGetAttribLocation(program, "aPosition"))
         glCheckError("glGetAttribLocation position")
         aUV = GLuint(glGetAttribLocation(program, "aUV"))
         glCheckError("glGetAttribLocation uv")
-
+        
         uProjection = glGetUniformLocation(program, "uProjection")
         glCheckError("glGetUniformLocation projection")
         uView = glGetUniformLocation(program, "uView")
@@ -354,13 +363,13 @@ public class Image360View: GLKView {
                                       rightTextureUnit : rightImageRef])
         texturesWereLoaded = true
     }
-
+    
     func unloadTextures() {
         EAGLContext.setCurrent(self.context)
         glUnloadTextures(textureInfo)
         texturesWereLoaded = false
     }
-
+    
     // MARK: Sphere
     /// Method for drawing spheres
     /// Variables connected to the shader are used for drawing.
@@ -372,7 +381,7 @@ public class Image360View: GLKView {
         for index in 0 ..< sphere.mDivide / 2 {
             glVertexAttribPointer(position, 3, GLenum(GL_FLOAT), GLboolean(GL_FALSE), 0, sphere.vertexArray[index])
             glVertexAttribPointer(uvLocation, 2, GLenum(GL_FLOAT), GLboolean(GL_FALSE), 0, sphere.texCoordsArray[index])
-
+            
             glDrawArrays(GLenum(GL_TRIANGLE_STRIP), 0, GLsizei(sphere.mDivide) + 2)
         }
     }
